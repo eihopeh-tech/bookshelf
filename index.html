@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#7a2e1f">
+<title>Bookshelf</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  :root{
+    --bg:#f7f2ea; --card:#fffdf9; --ink:#2b2420; --muted:#7b6f66; --line:#e6ddd0;
+    --accent:#7a2e1f; --accent-2:#a8492f; --ok:#3d6b4a; --warn:#a86a12; --danger:#a12a2a;
+    --serif:"Times New Roman", Times, Georgia, serif;
+    --sans:system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --r:14px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);-webkit-tap-highlight-color:transparent}
+  body{padding-bottom:calc(96px + env(safe-area-inset-bottom))}
+  button,input,select,textarea{font:inherit;color:inherit}
+  header{position:sticky;top:0;z-index:5;background:var(--accent);color:#fff;
+    padding:calc(12px + env(safe-area-inset-top)) 16px 12px}
+  .hrow{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  h1{font-family:var(--serif);font-weight:700;font-size:24px;margin:0;letter-spacing:.2px}
+  .count{font-size:13px;opacity:.85}
+  .iconbtn{background:rgba(255,255,255,.14);border:0;color:#fff;border-radius:10px;padding:8px 10px;font-size:14px}
+  .search{margin-top:10px;display:flex;gap:8px}
+  .search input{flex:1;border:0;border-radius:10px;padding:10px 12px;font-size:15px;color:var(--ink)}
+  .filters{display:flex;gap:8px;padding:10px 16px;overflow-x:auto;scrollbar-width:none}
+  .filters::-webkit-scrollbar{display:none}
+  .chip{border:1px solid var(--line);background:var(--card);border-radius:999px;padding:6px 12px;font-size:13px;white-space:nowrap}
+  .chip.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+  select.chip{appearance:none;padding-right:12px}
+  main{padding:4px 12px}
+  .book{display:flex;gap:12px;background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+    padding:10px;margin:8px 0;align-items:flex-start;cursor:pointer}
+  .cover{width:56px;height:84px;border-radius:4px;flex:none;object-fit:cover;background:#e9e0d2;
+    display:flex;align-items:center;justify-content:center;font-family:var(--serif);color:var(--muted);font-size:22px;overflow:hidden}
+  .bmeta{min-width:0;flex:1}
+  .btitle{font-family:var(--serif);font-size:17px;font-weight:700;line-height:1.2;margin:2px 0 3px}
+  .bauth{font-size:14px;color:var(--ink);opacity:.85}
+  .bsub{font-size:12.5px;color:var(--muted);margin-top:4px}
+  .tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+  .tag{font-size:11.5px;border-radius:999px;padding:2px 8px;background:#efe6d8;color:#5a4d43}
+  .tag.read{background:#dfeee2;color:var(--ok)} .tag.reading{background:#f6ead2;color:var(--warn)}
+  .tag.lent{background:#f3dcdc;color:var(--danger)}
+  .empty{text-align:center;color:var(--muted);padding:48px 24px;line-height:1.5}
+  .empty b{font-family:var(--serif);font-size:20px;color:var(--ink);display:block;margin-bottom:6px}
+  .fab .btn{white-space:nowrap}
+  .fab{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(20px + env(safe-area-inset-bottom));
+    display:flex;gap:10px;z-index:6}
+  .btn{border:0;border-radius:999px;padding:14px 20px;font-weight:600;font-size:15px;box-shadow:0 6px 18px rgba(0,0,0,.18)}
+  .btn.primary{background:var(--accent);color:#fff}
+  .btn.light{background:var(--card);color:var(--ink);border:1px solid var(--line)}
+  .btn.small{padding:10px 14px;font-size:14px;box-shadow:none}
+  .btn.danger{background:var(--danger);color:#fff;box-shadow:none}
+  /* Overlays */
+  .overlay{position:fixed;inset:0;z-index:20;display:none}
+  .overlay.show{display:block}
+  #scanner{background:#000}
+  #scanner video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+  .reticle{position:absolute;left:8%;right:8%;top:38%;height:24%;border:3px solid rgba(255,255,255,.9);border-radius:16px;
+    box-shadow:0 0 0 9999px rgba(0,0,0,.45)}
+  .reticle::after{content:"";position:absolute;left:6%;right:6%;top:50%;height:2px;background:#ff5a3c;animation:scan 1.6s ease-in-out infinite}
+  @keyframes scan{0%,100%{transform:translateY(-34px)}50%{transform:translateY(34px)}}
+  .scantop{position:absolute;top:0;left:0;right:0;padding:calc(14px + env(safe-area-inset-top)) 16px 14px;
+    display:flex;justify-content:space-between;align-items:center;color:#fff}
+  .scanhint{position:absolute;left:0;right:0;top:calc(38% - 46px);text-align:center;color:#fff;font-size:14px;padding:0 20px}
+  .scanbottom{position:absolute;left:0;right:0;bottom:0;padding:16px 16px calc(22px + env(safe-area-inset-bottom));
+    display:flex;flex-direction:column;gap:10px;align-items:center}
+  .scanstatus{color:#fff;font-size:14px;min-height:20px;text-align:center}
+  .row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .toggle{color:#fff;font-size:13px;display:flex;align-items:center;gap:6px}
+  .sheet{position:fixed;left:0;right:0;bottom:0;max-height:92vh;overflow:auto;background:var(--card);
+    border-radius:20px 20px 0 0;padding:18px 16px calc(20px + env(safe-area-inset-bottom));box-shadow:0 -10px 30px rgba(0,0,0,.25)}
+  .backdrop{position:absolute;inset:0;background:rgba(30,20,15,.45)}
+  .sheet h2{font-family:var(--serif);margin:0 0 4px;font-size:21px}
+  .sheet .lead{color:var(--muted);font-size:13px;margin-bottom:12px}
+  .preview{display:flex;gap:12px;margin-bottom:12px}
+  .preview .cover{width:72px;height:108px}
+  label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px;text-transform:uppercase;letter-spacing:.4px}
+  input.f,select.f,textarea.f{width:100%;border:1px solid var(--line);background:#fff;border-radius:10px;padding:10px 12px;font-size:15px}
+  textarea.f{min-height:70px;resize:vertical}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 10px}
+  .actions{display:flex;gap:10px;justify-content:flex-end;margin-top:16px;flex-wrap:wrap}
+  .notice{background:#fbf0d9;color:#6b4a0e;border-radius:10px;padding:10px 12px;font-size:13.5px;margin:6px 0 10px}
+  .notice.err{background:#f6dede;color:#7a1f1f}
+  .desc{font-size:13.5px;line-height:1.45;color:#4a3f38;margin-top:8px;max-height:7.5em;overflow:auto}
+  .menu a,.menu button{display:block;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);
+    padding:14px 4px;font-size:15px;color:var(--ink);text-decoration:none}
+  .toast{position:fixed;left:50%;bottom:calc(92px + env(safe-area-inset-bottom));transform:translateX(-50%);
+    background:var(--ink);color:#fff;padding:10px 16px;border-radius:999px;font-size:14px;z-index:40;opacity:0;
+    transition:opacity .2s;pointer-events:none;max-width:90vw;text-align:center}
+  .toast.show{opacity:1}
+  .spin{display:inline-block;width:14px;height:14px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;
+    animation:sp .7s linear infinite;vertical-align:-2px;margin-right:6px}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .muted{color:var(--muted)}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hrow">
+    <div>
+      <h1>Bookshelf</h1>
+      <div class="count" id="count">0 books</div>
+    </div>
+    <button class="iconbtn" id="menuBtn" aria-label="Menu">☰ Menu</button>
+  </div>
+  <div class="search">
+    <input id="q" type="search" placeholder="Search title, author, ISBN, shelf…" autocomplete="off">
+  </div>
+</header>
+
+<div class="filters" id="filters">
+  <button class="chip on" data-status="">All</button>
+  <button class="chip" data-status="unread">Unread</button>
+  <button class="chip" data-status="reading">Reading</button>
+  <button class="chip" data-status="read">Read</button>
+  <button class="chip" data-status="lent">Lent out</button>
+  <select class="chip" id="sort" aria-label="Sort">
+    <option value="added">Sort: Recently added</option>
+    <option value="title">Sort: Title</option>
+    <option value="author">Sort: Author</option>
+    <option value="year">Sort: Year</option>
+    <option value="shelf">Sort: Shelf</option>
+  </select>
+</div>
+
+<main id="list"></main>
+
+<div class="fab">
+  <button class="btn light" id="manualBtn">＋ Type ISBN</button>
+  <button class="btn primary" id="scanBtn">▣ Scan book</button>
+</div>
+
+<!-- Scanner -->
+<div class="overlay" id="scanner">
+  <video id="video" playsinline muted></video>
+  <div class="reticle"></div>
+  <div class="scantop">
+    <button class="iconbtn" id="closeScan">✕ Close</button>
+    <button class="iconbtn" id="torchBtn" style="display:none">⚡ Light</button>
+  </div>
+  <div class="scanhint">Point at the barcode on the back cover</div>
+  <div class="scanbottom">
+    <div class="scanstatus" id="scanStatus"></div>
+    <label class="toggle" style="text-transform:none;margin:0;color:#fff;font-size:13px;letter-spacing:0">
+      <input type="checkbox" id="quickMode"> Quick mode: save automatically and keep scanning
+    </label>
+    <div class="row">
+      <button class="btn light small" id="photoBtn">Use a photo instead</button>
+      <button class="btn light small" id="typeInsteadBtn">Type ISBN</button>
+    </div>
+    <input type="file" id="photoInput" accept="image/*" capture="environment" hidden>
+  </div>
+</div>
+
+<!-- Generic sheet -->
+<div class="overlay" id="sheetWrap">
+  <div class="backdrop" id="backdrop"></div>
+  <div class="sheet" id="sheet"></div>
+</div>
+
+<input type="file" id="importInput" accept=".json,application/json" hidden>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+/* ---------- Storage (IndexedDB on the phone) ---------- */
+const DB_NAME = 'bookshelf', STORE = 'books';
+let dbp = null;
+function db() {
+  if (!dbp) dbp = new Promise((res, rej) => {
+    const r = indexedDB.open(DB_NAME, 1);
+    r.onupgradeneeded = () => {
+      const s = r.result.createObjectStore(STORE, { keyPath: 'id' });
+      s.createIndex('isbn', 'isbn', { unique: false });
+    };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+  return dbp;
+}
+async function tx(mode, fn) {
+  const d = await db();
+  return new Promise((res, rej) => {
+    const t = d.transaction(STORE, mode), s = t.objectStore(STORE);
+    const out = fn(s);
+    t.oncomplete = () => res(out && out.result !== undefined ? out.result : out);
+    t.onerror = () => rej(t.error);
+  });
+}
+const allBooks = () => tx('readonly', s => s.getAll());
+const putBook = b => tx('readwrite', s => s.put(b));
+const delBook = id => tx('readwrite', s => s.delete(id));
+
+let books = [];
+async function reload() { books = await allBooks(); render(); }
+
+/* ---------- ISBN helpers ---------- */
+const clean = s => String(s || '').replace(/[^0-9Xx]/g, '').toUpperCase();
+function isbn13ok(c) {
+  if (!/^\d{13}$/.test(c)) return false;
+  let sum = 0; for (let i = 0; i < 12; i++) sum += (+c[i]) * (i % 2 ? 3 : 1);
+  return (10 - sum % 10) % 10 === +c[12];
+}
+function isbn10ok(c) {
+  if (!/^\d{9}[\dX]$/.test(c)) return false;
+  let sum = 0; for (let i = 0; i < 10; i++) sum += (c[i] === 'X' ? 10 : +c[i]) * (10 - i);
+  return sum % 11 === 0;
+}
+function to13(c) {
+  const core = '978' + c.slice(0, 9);
+  let sum = 0; for (let i = 0; i < 12; i++) sum += (+core[i]) * (i % 2 ? 3 : 1);
+  return core + ((10 - sum % 10) % 10);
+}
+function normaliseIsbn(raw) {
+  const c = clean(raw);
+  if (c.length === 13 && isbn13ok(c)) return { isbn: c, isBook: /^97[89]/.test(c) };
+  if (c.length === 10 && isbn10ok(c)) return { isbn: to13(c), isBook: true };
+  return null;
+}
+
+/* ---------- Book lookup (Open Library + Google Books) ---------- */
+async function getJSON(url, ms = 9000) {
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), ms);
+  try { const r = await fetch(url, { signal: ctl.signal }); if (!r.ok) throw new Error(r.status); return await r.json(); }
+  finally { clearTimeout(t); }
+}
+async function fromOpenLibrary(isbn) {
+  const j = await getJSON(`https://openlibrary.org/api/books?bibkeys=ISBN:${isbn}&format=json&jscmd=data`);
+  const b = j[`ISBN:${isbn}`]; if (!b) return null;
+  return {
+    title: b.title, subtitle: b.subtitle,
+    authors: (b.authors || []).map(a => a.name).join(', '),
+    publisher: (b.publishers || []).map(p => p.name).join(', '),
+    year: ((b.publish_date || '').match(/\d{4}/) || [''])[0],
+    pages: b.number_of_pages || '',
+    subjects: (b.subjects || []).slice(0, 6).map(s => s.name).join(', '),
+    cover: b.cover && (b.cover.medium || b.cover.large || b.cover.small) || ''
+  };
+}
+async function fromGoogle(isbn) {
+  const j = await getJSON(`https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}`);
+  const v = j.items && j.items[0] && j.items[0].volumeInfo; if (!v) return null;
+  const img = v.imageLinks && (v.imageLinks.thumbnail || v.imageLinks.smallThumbnail) || '';
+  return {
+    title: v.title, subtitle: v.subtitle,
+    authors: (v.authors || []).join(', '),
+    publisher: v.publisher || '',
+    year: ((v.publishedDate || '').match(/\d{4}/) || [''])[0],
+    pages: v.pageCount || '',
+    subjects: (v.categories || []).join(', '),
+    language: v.language || '',
+    description: v.description || '',
+    cover: img.replace(/^http:/, 'https:')
+  };
+}
+async function lookup(isbn) {
+  const [ol, gb] = await Promise.allSettled([fromOpenLibrary(isbn), fromGoogle(isbn)]);
+  const a = ol.status === 'fulfilled' ? ol.value : null;
+  const g = gb.status === 'fulfilled' ? gb.value : null;
+  if (!a && !g) {
+    const offline = ol.status === 'rejected' && gb.status === 'rejected';
+    return { found: false, offline };
+  }
+  const pick = k => (a && a[k]) || (g && g[k]) || '';
+  const pickG = k => (g && g[k]) || (a && a[k]) || '';
+  return {
+    found: true,
+    data: {
+      title: pick('title'), subtitle: pick('subtitle'), authors: pickG('authors'),
+      publisher: pick('publisher'), year: pick('year'), pages: pick('pages'),
+      subjects: pick('subjects'), language: pickG('language'), description: pickG('description'),
+      cover: pick('cover') || `https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg?default=false`
+    }
+  };
+}
+
+/* ---------- Rendering ---------- */
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+let filterStatus = '', query = '', sortBy = 'added';
+const STATUS_LABEL = { unread: 'Unread', reading: 'Reading', read: 'Read' };
+
+function coverHTML(b, cls = 'cover') {
+  const ch = (b.title || '').trim().charAt(0);
+  const letter = /[\p{L}\p{N}]/u.test(ch) ? esc(ch.toUpperCase()) : '•';
+  if (!b.cover) return `<div class="${cls}">${letter}</div>`;
+  return `<img class="${cls}" src="${esc(b.cover)}" alt="" loading="lazy"
+    onerror="this.outerHTML='<div class=&quot;${cls}&quot;>${letter}</div>'">`;
+}
+function render() {
+  const q = query.trim().toLowerCase();
+  let list = books.filter(b => {
+    if (filterStatus === 'lent' && !b.lentTo) return false;
+    if (filterStatus && filterStatus !== 'lent' && (b.status || 'unread') !== filterStatus) return false;
+    if (!q) return true;
+    return [b.title, b.subtitle, b.authors, b.isbn, b.publisher, b.subjects, b.shelf, b.notes, b.lentTo, b.year]
+      .some(v => String(v || '').toLowerCase().includes(q));
+  });
+  const by = {
+    added: (x, y) => (y.addedAt || 0) - (x.addedAt || 0),
+    title: (x, y) => (x.title || '').localeCompare(y.title || ''),
+    author: (x, y) => (x.authors || '').localeCompare(y.authors || ''),
+    year: (x, y) => (+y.year || 0) - (+x.year || 0),
+    shelf: (x, y) => (x.shelf || '~').localeCompare(y.shelf || '~')
+  }[sortBy];
+  list.sort(by);
+  const n = books.length;
+  $('#count').textContent = `${n} book${n === 1 ? '' : 's'}` + (list.length !== n ? ` · showing ${list.length}` : '');
+  if (!n) {
+    $('#list').innerHTML = `<div class="empty"><b>Your shelf is empty</b>Tap <em>Scan book</em> and point the camera at the barcode on the back of a book. Title, author and cover are filled in for you.</div>`;
+    return;
+  }
+  if (!list.length) { $('#list').innerHTML = `<div class="empty">No books match.</div>`; return; }
+  $('#list').innerHTML = list.map(b => {
+    const st = b.status || 'unread';
+    const sub = [b.publisher, b.year, b.shelf && `Shelf: ${b.shelf}`].filter(Boolean).map(esc).join(' · ');
+    return `<div class="book" data-id="${esc(b.id)}">
+      ${coverHTML(b)}
+      <div class="bmeta">
+        <div class="btitle">${esc(b.title || 'Untitled')}</div>
+        <div class="bauth">${esc(b.authors || 'Unknown author')}</div>
+        ${sub ? `<div class="bsub">${sub}</div>` : ''}
+        <div class="tags">
+          <span class="tag ${st}">${STATUS_LABEL[st]}</span>
+          ${b.rating ? `<span class="tag">${'★'.repeat(b.rating)}</span>` : ''}
+          ${+b.copies > 1 ? `<span class="tag">${+b.copies} copies</span>` : ''}
+          ${b.lentTo ? `<span class="tag lent">Lent to ${esc(b.lentTo)}</span>` : ''}
+        </div>
+      </div></div>`;
+  }).join('');
+}
+
+/* ---------- Sheet (pop-up panel) ---------- */
+function openSheet(html) { $('#sheet').innerHTML = html; $('#sheetWrap').classList.add('show'); $('#sheet').scrollTop = 0; }
+function closeSheet() { $('#sheetWrap').classList.remove('show'); $('#sheet').innerHTML = ''; if (resumeAfterSheet) { resumeAfterSheet = false; resumeScanning(); } }
+$('#backdrop').onclick = closeSheet;
+let resumeAfterSheet = false;
+
+function toast(msg, ms = 2200) {
+  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), ms);
+}
+
+const FIELDS = ['isbn', 'title', 'subtitle', 'authors', 'publisher', 'year', 'pages', 'language', 'subjects',
+  'shelf', 'status', 'rating', 'copies', 'lentTo', 'notes'];
+
+function formHTML(b, { heading, lead, notice, isNew }) {
+  const v = k => esc(b[k] ?? '');
+  const opt = (val, label, cur) => `<option value="${val}" ${String(cur) === String(val) ? 'selected' : ''}>${label}</option>`;
+  return `
+    <h2>${esc(heading)}</h2>${lead ? `<div class="lead">${lead}</div>` : ''}
+    ${notice || ''}
+    <div class="preview">${coverHTML(b)}
+      <div style="min-width:0">
+        <div class="btitle">${esc(b.title || 'Untitled')}</div>
+        <div class="bauth">${esc(b.authors || '')}</div>
+        ${b.isbn ? `<div class="bsub">ISBN ${esc(b.isbn)}</div>` : ''}
+        ${b.description ? `<div class="desc">${esc(b.description)}</div>` : ''}
+      </div></div>
+    <form id="bookForm" autocomplete="off">
+      <label>Title</label><input class="f" name="title" value="${v('title')}" required>
+      <label>Subtitle</label><input class="f" name="subtitle" value="${v('subtitle')}">
+      <label>Author(s)</label><input class="f" name="authors" value="${v('authors')}" placeholder="Separate with commas">
+      <div class="grid2">
+        <div><label>Publisher</label><input class="f" name="publisher" value="${v('publisher')}"></div>
+        <div><label>Year</label><input class="f" name="year" value="${v('year')}" inputmode="numeric"></div>
+        <div><label>Pages</label><input class="f" name="pages" value="${v('pages')}" inputmode="numeric"></div>
+        <div><label>ISBN</label><input class="f" name="isbn" value="${v('isbn')}" inputmode="numeric"></div>
+      </div>
+      <label>Subjects</label><input class="f" name="subjects" value="${v('subjects')}">
+      <div class="grid2">
+        <div><label>Shelf / location</label><input class="f" name="shelf" value="${v('shelf')}" list="shelves" placeholder="e.g. Study – Shelf 2"></div>
+        <div><label>Status</label><select class="f" name="status">
+          ${opt('unread', 'Unread', b.status || 'unread')}${opt('reading', 'Reading', b.status)}${opt('read', 'Read', b.status)}</select></div>
+        <div><label>Rating</label><select class="f" name="rating">
+          ${opt('', '—', b.rating || '')}${[1, 2, 3, 4, 5].map(n => opt(n, '★'.repeat(n), b.rating)).join('')}</select></div>
+        <div><label>Copies</label><input class="f" name="copies" value="${v('copies') || 1}" inputmode="numeric"></div>
+      </div>
+      <label>Lent to</label><input class="f" name="lentTo" value="${v('lentTo')}" placeholder="Leave empty if on your shelf">
+      <label>Notes</label><textarea class="f" name="notes">${v('notes')}</textarea>
+      <datalist id="shelves">${[...new Set(books.map(x => x.shelf).filter(Boolean))].map(s => `<option value="${esc(s)}">`).join('')}</datalist>
+      <div class="actions">
+        ${isNew ? '' : `<button type="button" class="btn danger small" id="delBtn">Delete</button>`}
+        <button type="button" class="btn light small" id="cancelBtn">Cancel</button>
+        <button type="submit" class="btn primary small">${isNew ? 'Save to shelf' : 'Save changes'}</button>
+      </div>
+    </form>`;
+}
+
+function showForm(b, opts) {
+  openSheet(formHTML(b, opts));
+  $('#cancelBtn').onclick = closeSheet;
+  $('#bookForm').onsubmit = async e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const out = { ...b };
+    FIELDS.forEach(k => { if (fd.has(k)) out[k] = String(fd.get(k)).trim(); });
+    out.rating = out.rating ? +out.rating : '';
+    out.copies = Math.max(1, parseInt(out.copies, 10) || 1);
+    const n = normaliseIsbn(out.isbn); if (n) out.isbn = n.isbn;
+    out.updatedAt = Date.now();
+    if (!out.addedAt) out.addedAt = Date.now();
+    await saveBook(out);
+    toast(opts.isNew ? `Saved “${out.title}”` : 'Changes saved');
+    closeSheet();
+  };
+  const del = $('#delBtn');
+  if (del) del.onclick = () => {
+    del.textContent = 'Tap again to delete';
+    del.onclick = async () => { await delBook(b.id); await reload(); toast('Book deleted'); closeSheet(); };
+  };
+}
+
+async function saveBook(b) {
+  await putBook(b); await reload();
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+}
+
+/* ---------- Handling an ISBN (scanned or typed) ---------- */
+let busy = false;
+async function handleIsbn(raw, source) {
+  if (busy) return; busy = true;
+  try {
+    const n = normaliseIsbn(raw);
+    if (!n) { setStatus('That code is not a valid ISBN. Try again.'); return; }
+    if (navigator.vibrate) navigator.vibrate(60);
+    const existing = books.find(b => b.isbn === n.isbn);
+    if (existing) {
+      pauseScanning(); resumeAfterSheet = scannerOpen;
+      openSheet(`<h2>Already on your shelf</h2>
+        <div class="preview">${coverHTML(existing)}<div><div class="btitle">${esc(existing.title)}</div>
+        <div class="bauth">${esc(existing.authors)}</div><div class="bsub">${+existing.copies || 1} cop${(+existing.copies || 1) > 1 ? 'ies' : 'y'} recorded</div></div></div>
+        <div class="actions"><button class="btn light small" id="openEx">View / edit</button>
+        <button class="btn primary small" id="addCopy">Add another copy</button>
+        <button class="btn light small" id="skipEx">Skip</button></div>`);
+      $('#skipEx').onclick = closeSheet;
+      $('#openEx').onclick = () => { resumeAfterSheet = false; stopScanner(); showForm(existing, { heading: 'Edit book' }); };
+      $('#addCopy').onclick = async () => { existing.copies = (+existing.copies || 1) + 1; existing.updatedAt = Date.now(); await saveBook(existing); toast('Copy added'); closeSheet(); };
+      return;
+    }
+    setStatus('<span class="spin"></span>Looking up ' + n.isbn + '…', true);
+    pauseScanning();
+    const res = await lookup(n.isbn);
+    const base = { id: 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), isbn: n.isbn, status: 'unread', copies: 1 };
+    if (res.found && $('#quickMode').checked && scannerOpen) {
+      const b = { ...base, ...res.data, addedAt: Date.now(), updatedAt: Date.now() };
+      await saveBook(b);
+      setStatus(`✓ Saved “${esc(b.title)}”. Scan the next book.`, true);
+      setTimeout(resumeScanning, 1200);
+      return 'keepbusy';
+    }
+    resumeAfterSheet = scannerOpen && $('#quickMode').checked;
+    if (!resumeAfterSheet) stopScanner();
+    let notice = '';
+    if (!n.isBook) notice = `<div class="notice">This barcode does not look like a book ISBN (it doesn't start with 978/979). It may be a price sticker. Check the code below.</div>`;
+    if (!res.found) notice += res.offline
+      ? `<div class="notice err">Couldn't reach the book databases (no internet?). Fill in the details yourself, or try again later.</div>`
+      : `<div class="notice">This ISBN isn't in Open Library or Google Books. Many Indian and regional titles aren't listed, so please fill in the details.</div>`;
+    showForm({ ...base, ...(res.data || {}) }, {
+      heading: res.found ? 'Book found' : 'Add book details', isNew: true, notice,
+      lead: res.found ? 'Check the details, add shelf and status, then save.' : ''
+    });
+  } finally {
+    busy = false;
+  }
+}
+
+/* ---------- Camera scanner ---------- */
+let stream = null, detector = null, zxingControls = null, scannerOpen = false, scanning = false, track = null, torchOn = false;
+const video = $('#video');
+function setStatus(html, isHTML) { $('#scanStatus')[isHTML ? 'innerHTML' : 'textContent'] = html; }
+
+async function openScanner() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    toast('Camera needs the app to be opened from an https:// address.', 3500); return;
+  }
+  scannerOpen = true; $('#scanner').classList.add('show'); setStatus('Starting camera…');
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false
+    });
+  } catch (e) {
+    setStatus('Camera blocked. Allow camera access for this site in Chrome settings, or use “Use a photo instead”.');
+    return;
+  }
+  video.srcObject = stream; await video.play().catch(() => {});
+  track = stream.getVideoTracks()[0];
+  try {
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    $('#torchBtn').style.display = caps.torch ? '' : 'none';
+    if (caps.focusMode && caps.focusMode.includes('continuous')) track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
+  } catch (_) {}
+  await setupDetector();
+  resumeScanning();
+}
+
+async function setupDetector() {
+  if (detector) return;
+  if ('BarcodeDetector' in window) {
+    try {
+      const sup = await BarcodeDetector.getSupportedFormats();
+      const want = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128'].filter(f => sup.includes(f));
+      if (want.includes('ean_13')) { detector = new BarcodeDetector({ formats: want }); return; }
+    } catch (_) {}
+  }
+  // Fallback for phones without the built-in detector
+  setStatus('<span class="spin"></span>Loading scanner…', true);
+  try {
+    const mod = await import('https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/+esm');
+    detector = { zxing: new mod.BrowserMultiFormatReader() };
+  } catch (e) { setStatus('Scanner could not load. Check the internet connection, or type the ISBN.'); }
+}
+
+function resumeScanning() {
+  if (!scannerOpen || !detector || !stream) return;
+  scanning = true; setStatus('Looking for a barcode…');
+  if (detector.zxing) {
+    if (zxingControls) return;
+    detector.zxing.decodeFromVideoElement(video, (result) => {
+      if (result && scanning) onCode(result.getText());
+    }).then(c => { zxingControls = c; }).catch(() => {});
+    return;
+  }
+  loop();
+}
+let lastCode = '', lastCount = 0;
+async function loop() {
+  if (!scanning) return;
+  try {
+    if (video.readyState >= 2) {
+      const codes = await detector.detect(video);
+      const c = codes.map(x => x.rawValue).find(v => normaliseIsbn(v));
+      if (c) {
+        // need the same code twice in a row to avoid misreads
+        if (c === lastCode) lastCount++; else { lastCode = c; lastCount = 1; }
+        if (lastCount >= 2) { lastCode = ''; lastCount = 0; onCode(c); return; }
+      }
+    }
+  } catch (_) {}
+  setTimeout(loop, 120);
+}
+async function onCode(code) {
+  if (!scanning) return;
+  scanning = false;
+  if (zxingControls) { zxingControls.stop(); zxingControls = null; }
+  const r = await handleIsbn(code, 'camera');
+  if (r === 'keepbusy') return;
+  if (scannerOpen && !$('#sheetWrap').classList.contains('show')) setTimeout(resumeScanning, 900);
+}
+function pauseScanning() { scanning = false; if (zxingControls) { zxingControls.stop(); zxingControls = null; } }
+function stopScanner() {
+  pauseScanning(); scannerOpen = false;
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null; track = null; torchOn = false;
+  $('#scanner').classList.remove('show');
+}
+$('#scanBtn').onclick = openScanner;
+$('#closeScan').onclick = stopScanner;
+$('#torchBtn').onclick = () => {
+  if (!track) return; torchOn = !torchOn;
+  track.applyConstraints({ advanced: [{ torch: torchOn }] }).catch(() => toast('Light not available'));
+};
+try { $('#quickMode').checked = localStorage.getItem('quick') === '1'; } catch (_) {}
+$('#quickMode').onchange = e => { try { localStorage.setItem('quick', e.target.checked ? '1' : '0'); } catch (_) {} };
+
+/* Photo fallback */
+$('#photoBtn').onclick = () => $('#photoInput').click();
+$('#photoInput').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  setStatus('<span class="spin"></span>Reading photo…', true);
+  try {
+    await setupDetector();
+    let code = null;
+    const bmp = await createImageBitmap(f);
+    if (detector && detector.detect) {
+      const codes = await detector.detect(bmp); code = (codes.map(x => x.rawValue).find(v => normaliseIsbn(v)));
+    } else if (detector && detector.zxing) {
+      const url = URL.createObjectURL(f);
+      try { code = (await detector.zxing.decodeFromImageUrl(url)).getText(); } catch (_) {}
+      URL.revokeObjectURL(url);
+    }
+    if (code) { pauseScanning(); await handleIsbn(code, 'photo'); }
+    else setStatus('No barcode found in that photo. Try a closer, sharper shot.');
+  } catch (_) { setStatus('Could not read that photo.'); }
+};
+
+/* ---------- Manual ISBN entry ---------- */
+function manualEntry() {
+  const wasOpen = scannerOpen; if (wasOpen) stopScanner();
+  openSheet(`<h2>Type an ISBN</h2><div class="lead">The 10- or 13-digit number printed above or below the barcode.</div>
+    <form id="isbnForm"><input class="f" id="isbnIn" inputmode="numeric" placeholder="978…" autofocus>
+    <div id="isbnErr"></div>
+    <div class="actions"><button type="button" class="btn light small" id="noIsbn">Book has no ISBN</button>
+    <button type="submit" class="btn primary small">Look up</button></div></form>`);
+  setTimeout(() => $('#isbnIn') && $('#isbnIn').focus(), 100);
+  $('#noIsbn').onclick = () => showForm({ id: 'b' + Date.now().toString(36), status: 'unread', copies: 1 }, { heading: 'Add a book', isNew: true });
+  $('#isbnForm').onsubmit = async e => {
+    e.preventDefault();
+    const v = $('#isbnIn').value;
+    if (!normaliseIsbn(v)) { $('#isbnErr').innerHTML = `<div class="notice err">That isn't a valid ISBN. Check the digits.</div>`; return; }
+    $('#isbnErr').innerHTML = `<div class="notice"><span class="spin"></span>Looking up…</div>`;
+    await handleIsbn(v, 'typed');
+  };
+}
+$('#manualBtn').onclick = manualEntry;
+$('#typeInsteadBtn').onclick = manualEntry;
+
+/* ---------- List interactions ---------- */
+$('#list').onclick = e => {
+  const el = e.target.closest('.book'); if (!el) return;
+  const b = books.find(x => x.id === el.dataset.id); if (b) showForm(b, { heading: 'Edit book' });
+};
+$('#q').oninput = e => { query = e.target.value; render(); };
+$('#filters').onclick = e => {
+  const c = e.target.closest('button.chip'); if (!c) return;
+  document.querySelectorAll('#filters button.chip').forEach(x => x.classList.toggle('on', x === c));
+  filterStatus = c.dataset.status; render();
+};
+$('#sort').onchange = e => { sortBy = e.target.value; render(); };
+
+/* ---------- Menu: export / backup / import ---------- */
+function download(name, text, type) {
+  const blob = new Blob([text], { type });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+const stamp = () => new Date().toISOString().slice(0, 10);
+function toCSV() {
+  const cols = ['isbn', 'title', 'subtitle', 'authors', 'publisher', 'year', 'pages', 'language', 'subjects', 'shelf', 'status', 'rating', 'copies', 'lentTo', 'notes', 'addedAt'];
+  const head = ['ISBN', 'Title', 'Subtitle', 'Author(s)', 'Publisher', 'Year', 'Pages', 'Language', 'Subjects', 'Shelf', 'Status', 'Rating', 'Copies', 'Lent to', 'Notes', 'Date added'];
+  const q = v => { const s = String(v ?? ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const rows = books.slice().sort((a, b) => (a.title || '').localeCompare(b.title || '')).map(b => cols.map(k =>
+    k === 'addedAt' ? (b.addedAt ? new Date(b.addedAt).toISOString().slice(0, 10) : '') :
+    k === 'isbn' ? (b.isbn ? '="' + b.isbn + '"' : '') : q(b[k])).join(','));
+  return '﻿' + head.join(',') + '\n' + rows.join('\n');
+}
+$('#menuBtn').onclick = () => {
+  openSheet(`<h2>Menu</h2><div class="lead">${books.length} books stored on this phone.</div>
+    <div class="menu">
+      <button id="mCsv">Export catalogue as CSV (opens in Excel / Google Sheets)</button>
+      <button id="mBackup">Download full backup (.json)</button>
+      <button id="mRestore">Restore from backup…</button>
+      <button id="mAdd">Add a book without ISBN</button>
+      <button id="mAbout">About &amp; tips</button>
+    </div>
+    <div class="actions"><button class="btn light small" id="mClose">Close</button></div>`);
+  $('#mClose').onclick = closeSheet;
+  $('#mCsv').onclick = () => { if (!books.length) return toast('Nothing to export yet'); download(`bookshelf-${stamp()}.csv`, toCSV(), 'text/csv;charset=utf-8'); toast('CSV downloaded'); };
+  $('#mBackup').onclick = () => { download(`bookshelf-backup-${stamp()}.json`, JSON.stringify({ app: 'bookshelf', version: 1, exported: new Date().toISOString(), books }, null, 1), 'application/json'); toast('Backup downloaded'); };
+  $('#mRestore').onclick = () => $('#importInput').click();
+  $('#mAdd').onclick = () => showForm({ id: 'b' + Date.now().toString(36), status: 'unread', copies: 1 }, { heading: 'Add a book', isNew: true });
+  $('#mAbout').onclick = () => openSheet(`<h2>About &amp; tips</h2><div class="desc" style="max-height:none">
+    <p>Book details come from Open Library and Google Books. Your catalogue is stored only on this phone, in Chrome.</p>
+    <p><b>Back up regularly</b> (Menu → Download full backup). Clearing Chrome's site data or uninstalling Chrome will erase the catalogue; a backup file restores it.</p>
+    <p><b>Scanning tips:</b> hold the barcode flat inside the frame, about 15–20 cm away; use ⚡ Light in dim rooms. Quick mode saves each book instantly so you can scan a whole shelf, then edit shelf and status later.</p>
+    <p>Books without an ISBN (old or locally printed) can be added by hand from the menu.</p></div>
+    <div class="actions"><button class="btn light small" onclick="document.getElementById('backdrop').click()">Close</button></div>`);
+};
+$('#importInput').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  try {
+    const j = JSON.parse(await f.text());
+    const list = Array.isArray(j) ? j : j.books;
+    if (!Array.isArray(list)) throw new Error('bad');
+    let added = 0, updated = 0;
+    for (const b of list) {
+      if (!b || !b.id) continue;
+      books.some(x => x.id === b.id) ? updated++ : added++;
+      await putBook(b);
+    }
+    await reload(); closeSheet(); toast(`Restored: ${added} added, ${updated} updated`, 3000);
+  } catch (_) { toast('That file is not a Bookshelf backup', 3000); }
+};
+
+/* ---------- Start ---------- */
+reload().catch(() => { $('#list').innerHTML = '<div class="empty"><b>Storage unavailable</b>This browser is blocking local storage (private/incognito mode?).</div>'; });
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+</script>
+</body>
+</html>
