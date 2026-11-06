@@ -133,7 +133,7 @@
 <main id="list"></main>
 
 <div class="fab">
-  <button class="btn light" id="manualBtn">＋ Type ISBN</button>
+  <button class="btn light" id="manualBtn">＋ No barcode</button>
   <button class="btn primary" id="scanBtn">▣ Scan book</button>
 </div>
 
@@ -152,7 +152,7 @@
       <input type="checkbox" id="quickMode"> Quick mode: save automatically and keep scanning
     </label>
     <div class="row">
-      <button class="btn light small" id="photoBtn">Use a photo instead</button>
+      <button class="btn light small" id="photoBtn">No barcode? Photograph the ISBN</button>
       <button class="btn light small" id="typeInsteadBtn">Type ISBN</button>
     </div>
     <input type="file" id="photoInput" accept="image/*" capture="environment" hidden>
@@ -621,6 +621,126 @@ async function handleIsbn(raw, source) {
   }
 }
 
+/* ---------- Reading a printed ISBN from a photo (for books without a barcode) ---------- */
+const OCR_LIB = 'https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/tesseract.min.js';
+let ocrWorkerP = null, ocrProgress = null;
+function loadScript(src) {
+  return new Promise((res, rej) => { const el = document.createElement('script'); el.src = src; el.onload = res; el.onerror = () => rej(new Error('load')); document.head.appendChild(el); });
+}
+function getOcr() {
+  if (!ocrWorkerP) ocrWorkerP = (async () => {
+    if (!window.Tesseract) await loadScript(OCR_LIB);
+    return Tesseract.createWorker('eng', 1, { logger: m => ocrProgress && ocrProgress(m) });
+  })().catch(e => { ocrWorkerP = null; throw e; });
+  return ocrWorkerP;
+}
+// Shrink very large photos, convert to greyscale and stretch contrast: faster and more accurate.
+async function prepImage(file) {
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(1, 2400 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
+  const g = c.getContext('2d'); g.drawImage(bmp, 0, 0, c.width, c.height);
+  const im = g.getImageData(0, 0, c.width, c.height), d = im.data;
+  let lo = 255, hi = 0; const lum = new Uint8ClampedArray(d.length / 4);
+  for (let i = 0, j = 0; i < d.length; i += 4, j++) { const v = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000; lum[j] = v; if (v < lo) lo = v; if (v > hi) hi = v; }
+  const span = Math.max(1, hi - lo);
+  for (let i = 0, j = 0; i < d.length; i += 4, j++) { const v = (lum[j] - lo) * 255 / span; d[i] = d[i + 1] = d[i + 2] = v; }
+  g.putImageData(im, 0, 0);
+  return { canvas: c, bmp };
+}
+// Find valid ISBNs in OCR text. Fixes common misreads (O→0, I/l→1, S→5, B→8) and keeps only numbers whose check digit is right.
+function findIsbns(text) {
+  const fix = { O: '0', o: '0', D: '0', Q: '0', I: '1', l: '1', '|': '1', S: '5', B: '8', Z: '2' };
+  const found = new Map();
+  text.split(/\n/).forEach(line => {
+    const re = /[0-9OoDQIl|SBZ][0-9OoDQIl|SBZ\-–—.\s]{8,24}[0-9Xx]/g; let m;
+    while ((m = re.exec(line))) {
+      const digits = m[0].replace(/[OoDQIl|SBZ]/g, c => fix[c]).replace(/[^0-9Xx]/g, '').toUpperCase();
+      let got13 = false;
+      for (let i = 0; i + 13 <= digits.length; i++) {
+        const n = normaliseIsbn(digits.slice(i, i + 13));
+        if (n && n.isBook) { got13 = true; add(n.isbn, line, m[0]); }
+      }
+      if (!got13) for (let i = 0; i + 10 <= digits.length; i++) {
+        const c = digits.slice(i, i + 10);
+        if (c.length === 10 && isbn10ok(c) && /isbn/i.test(line)) add(to13(c), line, m[0]);
+      }
+    }
+  });
+  function add(isbn, line, raw) {
+    if (found.has(isbn)) return;
+    const paren = (line.match(/\(([^)]{2,30})\)/) || [])[1];
+    const rest = line.replace(raw, ' ').replace(/ISBN[-\s:]*(1[03])?[:\s]*/ig, '').replace(/\s+/g, ' ').trim();
+    found.set(isbn, { isbn, label: (paren || rest).slice(0, 40), named: /isbn/i.test(line) });
+  }
+  return [...found.values()].sort((a, b) => b.named - a.named);
+}
+async function readIsbnFromPhoto(file, status) {
+  status('<span class="spin"></span>Preparing photo…');
+  const { canvas, bmp } = await prepImage(file);
+  // 1) maybe there is a barcode in the photo after all
+  try {
+    await setupDetector();
+    if (detector && detector.detect) {
+      const codes = await detector.detect(bmp);
+      const c = codes.map(x => x.rawValue).find(v => normaliseIsbn(v));
+      if (c) return [{ isbn: normaliseIsbn(c).isbn, label: 'barcode', named: true }];
+    }
+  } catch (_) {}
+  // 2) read the printed text
+  ocrProgress = m => {
+    if (m.status === 'recognizing text') status(`<span class="spin"></span>Reading the text… ${Math.round(m.progress * 100)}%`);
+    else if (/load|initializ/i.test(m.status)) status('<span class="spin"></span>Loading text reader (first time only)…');
+  };
+  status('<span class="spin"></span>Loading text reader…');
+  const w = await getOcr();
+  let { data } = await w.recognize(canvas);
+  let hits = findIsbns(data.text || '');
+  if (!hits.length) {            // try once more with the photo turned sideways
+    const r = document.createElement('canvas'); r.width = canvas.height; r.height = canvas.width;
+    const g = r.getContext('2d'); g.translate(r.width, 0); g.rotate(Math.PI / 2); g.drawImage(canvas, 0, 0);
+    ({ data } = await w.recognize(r)); hits = findIsbns(data.text || '');
+  }
+  ocrProgress = null;
+  return hits;
+}
+function photoIsbnSheet() {
+  const wasOpen = scannerOpen; if (wasOpen) stopScanner();
+  openSheet(`<h2>Photograph the ISBN</h2>
+    <div class="lead">For books without a barcode. Open to the copyright page (usually the back of the title page) and take a close, sharp photo of the line that says <b>ISBN</b>.</div>
+    <div id="ocrOut"></div>
+    <div class="actions"><button class="btn light small" id="ocrCancel">Cancel</button>
+    <button class="btn primary small" id="ocrShoot">📷 Take photo</button></div>
+    <input type="file" id="ocrInput" accept="image/*" capture="environment" hidden>`);
+  $('#ocrCancel').onclick = closeSheet;
+  $('#ocrShoot').onclick = () => $('#ocrInput').click();
+  $('#ocrInput').onchange = async e => {
+    const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+    const out = $('#ocrOut');
+    const status = h => { out.innerHTML = `<div class="notice">${h}</div>`; };
+    $('#ocrShoot').disabled = true;
+    try {
+      const hits = await readIsbnFromPhoto(f, status);
+      $('#ocrShoot').disabled = false; $('#ocrShoot').textContent = '📷 Take another photo';
+      if (!hits.length) {
+        out.innerHTML = `<div class="notice err">No ISBN could be read. Try again closer, in good light, holding the phone steady and level with the page. You can also type the number instead.</div>
+          <div class="actions" style="justify-content:flex-start"><button class="btn light small" id="ocrType">Type it instead</button></div>`;
+        $('#ocrType').onclick = manualEntry;
+        return;
+      }
+      if (hits.length === 1) { out.innerHTML = `<div class="notice">Read ISBN <b>${hits[0].isbn}</b>. Looking it up…</div>`; await handleIsbn(hits[0].isbn, 'ocr'); return; }
+      out.innerHTML = `<div class="notice">Several ISBNs on this page (often one per edition). Tap the one for <b>your</b> copy:</div>` +
+        hits.map(h => `<button class="btn light small" style="display:block;width:100%;text-align:left;margin:6px 0" data-isbn="${h.isbn}">
+          <b>${h.isbn}</b>${h.label ? ` <span class="muted">· ${esc(h.label)}</span>` : ''}</button>`).join('');
+      out.querySelectorAll('[data-isbn]').forEach(b => b.onclick = () => handleIsbn(b.dataset.isbn, 'ocr'));
+    } catch (err) {
+      $('#ocrShoot').disabled = false;
+      out.innerHTML = `<div class="notice err">The text reader couldn't load. It needs internet the first time. Please try again, or type the ISBN.</div>`;
+    }
+  };
+}
+
 /* ---------- Camera scanner ---------- */
 let stream = null, detector = null, zxingControls = null, scannerOpen = false, scanning = false, track = null, torchOn = false;
 const video = $('#video');
@@ -721,7 +841,7 @@ try { $('#quickMode').checked = localStorage.getItem('quick') === '1'; } catch (
 $('#quickMode').onchange = e => { try { localStorage.setItem('quick', e.target.checked ? '1' : '0'); } catch (_) {} };
 
 /* Photo fallback */
-$('#photoBtn').onclick = () => $('#photoInput').click();
+$('#photoBtn').onclick = photoIsbnSheet;
 $('#photoInput').onchange = async e => {
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
   setStatus('<span class="spin"></span>Reading photo…', true);
@@ -744,12 +864,15 @@ $('#photoInput').onchange = async e => {
 /* ---------- Manual ISBN entry ---------- */
 function manualEntry() {
   const wasOpen = scannerOpen; if (wasOpen) stopScanner();
-  openSheet(`<h2>Type an ISBN</h2><div class="lead">The 10- or 13-digit number printed above or below the barcode.</div>
+  openSheet(`<h2>Book without a barcode?</h2>
+    <div class="lead">Hardbacks often print the ISBN inside, on the copyright page. Photograph it, or type it below.</div>
+    <div class="actions" style="justify-content:flex-start;margin:0 0 6px"><button type="button" class="btn primary small" id="toPhoto">📷 Photograph the ISBN page</button></div>
+    <label>Or type the ISBN</label>
     <form id="isbnForm"><input class="f" id="isbnIn" inputmode="numeric" placeholder="978…" autofocus>
     <div id="isbnErr"></div>
     <div class="actions"><button type="button" class="btn light small" id="noIsbn">Book has no ISBN</button>
     <button type="submit" class="btn primary small">Look up</button></div></form>`);
-  setTimeout(() => $('#isbnIn') && $('#isbnIn').focus(), 100);
+  $('#toPhoto').onclick = photoIsbnSheet;
   $('#noIsbn').onclick = () => showForm({ id: 'b' + Date.now().toString(36), status: 'unread', copies: 1 }, { heading: 'Add a book', isNew: true });
   $('#isbnForm').onsubmit = async e => {
     e.preventDefault();
