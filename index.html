@@ -260,10 +260,91 @@ async function fromGoogle(isbn) {
     cover: img.replace(/^http:/, 'https:')
   };
 }
+async function fromOLSearch(isbn) {
+  const j = await getJSON(`https://openlibrary.org/search.json?isbn=${isbn}&limit=1&fields=title,subtitle,author_name,publisher,first_publish_year,number_of_pages_median,subject,cover_i,language`);
+  const d = j.docs && j.docs[0]; if (!d) return null;
+  return {
+    title: d.title, subtitle: d.subtitle,
+    authors: (d.author_name || []).join(', '),
+    publisher: (d.publisher || [])[0] || '',
+    year: d.first_publish_year || '',
+    pages: d.number_of_pages_median || '',
+    subjects: (d.subject || []).slice(0, 6).join(', '),
+    cover: d.cover_i ? `https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg` : ''
+  };
+}
+async function fromGooglePlain(isbn) {
+  const j = await getJSON(`https://www.googleapis.com/books/v1/volumes?q=${isbn}`);
+  const it = (j.items || []).find(x => (x.volumeInfo.industryIdentifiers || []).some(i => i.identifier === isbn || to13safe(i.identifier) === isbn));
+  if (!it) return null;
+  const v = it.volumeInfo, img = v.imageLinks && (v.imageLinks.thumbnail || v.imageLinks.smallThumbnail) || '';
+  return { title: v.title, subtitle: v.subtitle, authors: (v.authors || []).join(', '), publisher: v.publisher || '',
+    year: ((v.publishedDate || '').match(/\d{4}/) || [''])[0], pages: v.pageCount || '', subjects: (v.categories || []).join(', '),
+    language: v.language || '', description: v.description || '', cover: img.replace(/^http:/, 'https:') };
+}
+function to13safe(x) { const c = clean(x); return c.length === 10 && isbn10ok(c) ? to13(c) : c; }
+async function fromCrossref(isbn) {
+  const j = await getJSON(`https://api.crossref.org/works?filter=isbn:${isbn}&rows=1`);
+  const it = j.message && j.message.items && j.message.items[0]; if (!it) return null;
+  const people = (it.author || it.editor || []).map(p => [p.given, p.family].filter(Boolean).join(' ') || p.name).filter(Boolean);
+  const dp = (it.issued || it.published || {})['date-parts'];
+  return { title: (it.title || [])[0] || '', subtitle: (it.subtitle || [])[0] || '', authors: people.join(', '),
+    publisher: it.publisher || '', year: (dp && dp[0] && dp[0][0]) || '', subjects: (it.subject || []).join(', ') };
+}
+
+/* Optional web search through the Claude API (only if the user adds a key in Menu → Web search). */
+const AI_MODEL = 'claude-haiku-5-5';
+function getKey() { try { return localStorage.getItem('aiKey') || ''; } catch (_) { return ''; } }
+async function fromAI(isbn) {
+  const key = getKey(); if (!key) return null;
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 90000);
+  try {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST', signal: ctl.signal,
+      headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({
+        model: AI_MODEL, max_tokens: 1500,
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 4 }],
+        messages: [{ role: 'user', content:
+`Find the bibliographic details of the printed book with ISBN ${isbn}. Search the web (publisher sites, Indian booksellers such as Amazon.in, Flipkart, Bookswagon, Sapna, library catalogues, the Indian ISBN agency).
+Only report a book if a source you found explicitly lists this exact ISBN. Do not guess.
+Reply with ONLY one JSON object, no other text:
+{"found": true|false, "title": "", "subtitle": "", "authors": [""], "publisher": "", "year": "", "pages": "", "language": "", "subjects": [""], "description": "one or two sentences in your own words", "source_url": ""}` }]
+      })
+    });
+    if (!r.ok) {
+      let msg = 'Web search failed (' + r.status + ')';
+      try { const e = await r.json(); if (e.error && e.error.message) msg += ': ' + e.error.message; } catch (_) {}
+      throw new Error(msg);
+    }
+    const j = await r.json();
+    const text = (j.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
+    const m = text.match(/\{[\s\S]*\}/); if (!m) return null;
+    const d = JSON.parse(m[0]); if (!d.found || !d.title) return null;
+    const list = v => Array.isArray(v) ? v.filter(Boolean).join(', ') : (v || '');
+    return { title: d.title, subtitle: d.subtitle || '', authors: list(d.authors), publisher: d.publisher || '',
+      year: String(d.year || '').replace(/[^0-9]/g, '').slice(0, 4), pages: String(d.pages || '').replace(/[^0-9]/g, ''),
+      language: d.language || '', subjects: list(d.subjects), description: d.description || '', source: d.source_url || '' };
+  } finally { clearTimeout(t); }
+}
+
+// A record is trustworthy only if it has a real title and an author.
+const good = r => r && r.title && r.title.trim().length > 2 && r.authors;
 async function lookup(isbn) {
-  const [ol, gb] = await Promise.allSettled([fromOpenLibrary(isbn), fromGoogle(isbn)]);
-  const a = ol.status === 'fulfilled' ? ol.value : null;
-  const g = gb.status === 'fulfilled' ? gb.value : null;
+  let [ol, gb] = await Promise.allSettled([fromOpenLibrary(isbn), fromGoogle(isbn)]);
+  let a = ol.status === 'fulfilled' ? ol.value : null;
+  let g = gb.status === 'fulfilled' ? gb.value : null;
+  if (!good(a) && !good(g)) {
+    const [os, gp, cr] = await Promise.allSettled([fromOLSearch(isbn), fromGooglePlain(isbn), fromCrossref(isbn)]);
+    if (os.status === 'fulfilled' && good(os.value)) a = os.value;
+    else if (cr.status === 'fulfilled' && good(cr.value)) a = cr.value;
+    if (gp.status === 'fulfilled' && good(gp.value)) g = gp.value;
+    if (ol.status === 'rejected' && os.status === 'fulfilled') ol = os;
+    if (gb.status === 'rejected' && gp.status === 'fulfilled') gb = gp;
+  }
+  if (a && !good(a) && good(g)) a = null;
+  if (g && !good(g) && good(a)) g = null;
   if (!a && !g) {
     const offline = ol.status === 'rejected' && gb.status === 'rejected';
     return { found: false, offline };
@@ -271,7 +352,7 @@ async function lookup(isbn) {
   const pick = k => (a && a[k]) || (g && g[k]) || '';
   const pickG = k => (g && g[k]) || (a && a[k]) || '';
   return {
-    found: true,
+    found: true, complete: good(a) || good(g),
     data: {
       title: pick('title'), subtitle: pick('subtitle'), authors: pickG('authors'),
       publisher: pick('publisher'), year: pick('year'), pages: pick('pages'),
@@ -280,6 +361,43 @@ async function lookup(isbn) {
     }
   };
 }
+
+/* ---------- Automatic background lookup for books not found ---------- */
+const PLACEHOLDER = isbn => `Unknown book (ISBN ${isbn})`;
+const isPlaceholder = b => !b.title || b.title === PLACEHOLDER(b.isbn);
+const running = new Set();
+async function deepLookup(id, manual) {
+  if (running.has(id)) return; running.add(id); render();
+  try {
+    const b0 = books.find(x => x.id === id); if (!b0 || !b0.pending || !b0.isbn) return;
+    let data = null, via = '', err = '';
+    const res = await lookup(b0.isbn);
+    if (res.found && res.complete) { data = res.data; via = 'databases'; }
+    if (!data) { try { const ai = await fromAI(b0.isbn); if (ai) { data = ai; via = 'web search'; } } catch (e) { err = e.message || String(e); } }
+    const b = (await allBooks()).find(x => x.id === id);
+    if (!b || !b.pending) return;                       // deleted or edited by hand meanwhile
+    b.tries = (b.tries || 0) + 1; b.lastTry = Date.now(); b.lookupError = err;
+    if (data) {
+      for (const k of ['title', 'subtitle', 'authors', 'publisher', 'year', 'pages', 'language', 'subjects', 'description', 'cover']) {
+        if (data[k] && (!b[k] || (k === 'title' && isPlaceholder(b)))) b[k] = data[k];
+      }
+      b.pending = false; b.filledFrom = via; if (data.source) b.sourceUrl = data.source; delete b.lookupError;
+      b.updatedAt = Date.now();
+      await putBook(b); await reload(); toast(`Details found: “${b.title}”`, 3500);
+    } else {
+      await putBook(b); await reload();
+      if (manual) toast(err ? err : 'Still not found online. It will retry automatically.', 4000);
+    }
+  } catch (_) {} finally { running.delete(id); render(); }
+}
+function retryPending(force) {
+  if (!navigator.onLine) return;
+  const due = books.filter(b => b.pending && b.isbn &&
+    (force || ((b.tries || 0) < 10 && Date.now() - (b.lastTry || 0) > 864e5)));
+  due.forEach((b, i) => setTimeout(() => deepLookup(b.id, force), i * 2000));
+  return due.length;
+}
+window.addEventListener('online', () => retryPending(false));
 
 /* ---------- Rendering ---------- */
 const $ = s => document.querySelector(s);
@@ -332,6 +450,7 @@ function render() {
           ${b.rating ? `<span class="tag">${'★'.repeat(b.rating)}</span>` : ''}
           ${+b.copies > 1 ? `<span class="tag">${+b.copies} copies</span>` : ''}
           ${b.lentTo ? `<span class="tag lent">Lent to ${esc(b.lentTo)}</span>` : ''}
+          ${running.has(b.id) ? `<span class="tag reading"><span class="spin"></span>Searching…</span>` : b.pending ? `<span class="tag reading">Details pending</span>` : ''}
         </div>
       </div></div>`;
   }).join('');
@@ -351,8 +470,17 @@ function toast(msg, ms = 2200) {
 const FIELDS = ['isbn', 'title', 'subtitle', 'authors', 'publisher', 'year', 'pages', 'language', 'subjects',
   'shelf', 'status', 'rating', 'copies', 'lentTo', 'notes'];
 
+function pendingNotice(b) {
+  if (!b.pending) return '';
+  const why = b.lookupError ? `<br><small>${esc(b.lookupError)}</small>` : '';
+  return `<div class="notice">Details for this ISBN weren't found yet. The app keeps checking automatically (${b.tries || 0} tr${(b.tries || 0) === 1 ? 'y' : 'ies'} so far)${getKey() ? ', including a web search' : '. Switch on Web search in the Menu for better results'}. Or type the details from the cover.${why}
+    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn light small" id="retryNow">Search again now</button>
+    <a class="btn light small" style="text-decoration:none" target="_blank" rel="noopener" href="https://www.google.com/search?q=ISBN+${esc(b.isbn)}">Search on Google ↗</a></div></div>`;
+}
 function formHTML(b, { heading, lead, notice, isNew }) {
-  const v = k => esc(b[k] ?? '');
+  const v = k => esc(k === 'title' && isPlaceholder(b) ? '' : (b[k] ?? ''));
+  if (!notice) notice = pendingNotice(b);
+  const src = b.filledFrom === 'web search' ? `<div class="bsub">Filled in automatically by web search${b.sourceUrl ? ` · <a href="${esc(b.sourceUrl)}" target="_blank" rel="noopener">source</a>` : ''}. Please check.</div>` : '';
   const opt = (val, label, cur) => `<option value="${val}" ${String(cur) === String(val) ? 'selected' : ''}>${label}</option>`;
   return `
     <h2>${esc(heading)}</h2>${lead ? `<div class="lead">${lead}</div>` : ''}
@@ -362,10 +490,11 @@ function formHTML(b, { heading, lead, notice, isNew }) {
         <div class="btitle">${esc(b.title || 'Untitled')}</div>
         <div class="bauth">${esc(b.authors || '')}</div>
         ${b.isbn ? `<div class="bsub">ISBN ${esc(b.isbn)}</div>` : ''}
+        ${src}
         ${b.description ? `<div class="desc">${esc(b.description)}</div>` : ''}
       </div></div>
     <form id="bookForm" autocomplete="off">
-      <label>Title</label><input class="f" name="title" value="${v('title')}" required>
+      <label>Title</label><input class="f" name="title" value="${v('title')}" placeholder="Title from the cover">
       <label>Subtitle</label><input class="f" name="subtitle" value="${v('subtitle')}">
       <label>Author(s)</label><input class="f" name="authors" value="${v('authors')}" placeholder="Separate with commas">
       <div class="grid2">
@@ -397,6 +526,8 @@ function formHTML(b, { heading, lead, notice, isNew }) {
 function showForm(b, opts) {
   openSheet(formHTML(b, opts));
   $('#cancelBtn').onclick = closeSheet;
+  const rn = $('#retryNow');
+  if (rn) rn.onclick = () => { closeSheet(); toast('Searching…'); deepLookup(b.id, true); };
   $('#bookForm').onsubmit = async e => {
     e.preventDefault();
     const fd = new FormData(e.target);
@@ -405,6 +536,8 @@ function showForm(b, opts) {
     out.rating = out.rating ? +out.rating : '';
     out.copies = Math.max(1, parseInt(out.copies, 10) || 1);
     const n = normaliseIsbn(out.isbn); if (n) out.isbn = n.isbn;
+    if (!out.title) out.title = out.isbn ? PLACEHOLDER(out.isbn) : 'Untitled';
+    if (out.pending && !isPlaceholder(out)) out.pending = false;   // typed by hand: stop auto lookups
     out.updatedAt = Date.now();
     if (!out.addedAt) out.addedAt = Date.now();
     await saveBook(out);
@@ -449,22 +582,38 @@ async function handleIsbn(raw, source) {
     pauseScanning();
     const res = await lookup(n.isbn);
     const base = { id: 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), isbn: n.isbn, status: 'unread', copies: 1 };
-    if (res.found && $('#quickMode').checked && scannerOpen) {
+    if (res.found && res.complete && $('#quickMode').checked && scannerOpen) {
       const b = { ...base, ...res.data, addedAt: Date.now(), updatedAt: Date.now() };
       await saveBook(b);
       setStatus(`✓ Saved “${esc(b.title)}”. Scan the next book.`, true);
       setTimeout(resumeScanning, 1200);
       return 'keepbusy';
     }
+    if (!res.found || !res.complete) {
+      const part = res.data || {};
+      const b = { ...base, ...part, title: good(part) || (part.title && part.title.trim().length > 2) ? part.title : PLACEHOLDER(n.isbn),
+        pending: true, tries: res.offline ? 0 : 1, lastTry: res.offline ? 0 : Date.now(), addedAt: Date.now(), updatedAt: Date.now() };
+      await saveBook(b);
+      const msg = res.offline ? 'Saved. No internet right now; details will be looked up automatically later.'
+        : getKey() ? 'Not in the book databases. Saved, and searching the web in the background…'
+        : 'Not in the book databases. Saved; the app will keep checking automatically.';
+      if (!res.offline && getKey()) { b.tries = 0; await putBook(b); deepLookup(b.id); }
+      if (scannerOpen) { setStatus(msg); setTimeout(resumeScanning, 2200); return 'keepbusy'; }
+      closeSheet(); toast(msg, 4000);
+      return;
+    }
     resumeAfterSheet = scannerOpen && $('#quickMode').checked;
     if (!resumeAfterSheet) stopScanner();
     let notice = '';
     if (!n.isBook) notice = `<div class="notice">This barcode does not look like a book ISBN (it doesn't start with 978/979). It may be a price sticker. Check the code below.</div>`;
+    if (res.found && !res.complete) notice += `<div class="notice">Only partial details were found online (no author or an odd title). Please check and complete them.</div>`;
     if (!res.found) notice += res.offline
       ? `<div class="notice err">Couldn't reach the book databases (no internet?). Fill in the details yourself, or try again later.</div>`
-      : `<div class="notice">This ISBN isn't in Open Library or Google Books. Many Indian and regional titles aren't listed, so please fill in the details.</div>`;
+      : `<div class="notice">This ISBN isn't in Open Library or Google Books. Many Indian and regional titles aren't listed, so please fill in the details from the cover.
+         <div style="margin-top:8px"><a class="btn light small" style="display:inline-block;text-decoration:none" target="_blank" rel="noopener"
+         href="https://www.google.com/search?q=ISBN+${n.isbn}">Search this ISBN on Google ↗</a></div></div>`;
     showForm({ ...base, ...(res.data || {}) }, {
-      heading: res.found ? 'Book found' : 'Add book details', isNew: true, notice,
+      heading: res.found && res.complete ? 'Book found' : 'Add book details', isNew: true, notice,
       lead: res.found ? 'Check the details, add shelf and status, then save.' : ''
     });
   } finally {
@@ -537,6 +686,7 @@ async function loop() {
     if (video.readyState >= 2) {
       const codes = await detector.detect(video);
       const c = codes.map(x => x.rawValue).find(v => normaliseIsbn(v));
+      if (!c && codes.length) setStatus(`Barcode ${codes[0].rawValue} isn't an ISBN. Look for the barcode starting 978 or 979, or tap Type ISBN.`);
       if (c) {
         // need the same code twice in a row to avoid misreads
         if (c === lastCode) lastCount++; else { lastCode = c; lastCount = 1; }
@@ -647,6 +797,8 @@ $('#menuBtn').onclick = () => {
       <button id="mCsv">Export catalogue as CSV (opens in Excel / Google Sheets)</button>
       <button id="mBackup">Download full backup (.json)</button>
       <button id="mRestore">Restore from backup…</button>
+      <button id="mWeb">Web search for books not found: ${getKey() ? '<b>On</b>' : 'Off'}</button>
+      ${books.some(b => b.pending) ? `<button id="mRetry">Search again for ${books.filter(b => b.pending).length} pending book(s)</button>` : ''}
       <button id="mAdd">Add a book without ISBN</button>
       <button id="mAbout">About &amp; tips</button>
     </div>
@@ -655,6 +807,22 @@ $('#menuBtn').onclick = () => {
   $('#mCsv').onclick = () => { if (!books.length) return toast('Nothing to export yet'); download(`bookshelf-${stamp()}.csv`, toCSV(), 'text/csv;charset=utf-8'); toast('CSV downloaded'); };
   $('#mBackup').onclick = () => { download(`bookshelf-backup-${stamp()}.json`, JSON.stringify({ app: 'bookshelf', version: 1, exported: new Date().toISOString(), books }, null, 1), 'application/json'); toast('Backup downloaded'); };
   $('#mRestore').onclick = () => $('#importInput').click();
+  if ($('#mRetry')) $('#mRetry').onclick = () => { const n = retryPending(true); closeSheet(); toast(n ? `Searching for ${n} book(s)…` : 'Nothing to search'); };
+  $('#mWeb').onclick = () => {
+    openSheet(`<h2>Web search</h2>
+      <div class="desc" style="max-height:none">When a book isn't in Open Library, Google Books or Crossref, the app can search the web (Indian booksellers, publishers, library catalogues) and fill in the entry by itself. This uses the Claude API, which needs your own API key and costs a small amount per book searched; the key stays on this phone.</div>
+      <label>Claude API key</label><input class="f" id="keyIn" type="password" placeholder="sk-ant-…" value="${esc(getKey())}" autocomplete="off">
+      <div class="actions">${getKey() ? '<button class="btn light small" id="keyOff">Turn off</button>' : ''}
+      <button class="btn light small" id="keyCancel">Cancel</button><button class="btn primary small" id="keySave">Save</button></div>`);
+    $('#keyCancel').onclick = closeSheet;
+    if ($('#keyOff')) $('#keyOff').onclick = () => { try { localStorage.removeItem('aiKey'); } catch (_) {} closeSheet(); toast('Web search turned off'); };
+    $('#keySave').onclick = () => {
+      const k = $('#keyIn').value.trim();
+      try { k ? localStorage.setItem('aiKey', k) : localStorage.removeItem('aiKey'); } catch (_) {}
+      closeSheet(); toast(k ? 'Web search on. Searching pending books…' : 'Web search turned off');
+      if (k) retryPending(true);
+    };
+  };
   $('#mAdd').onclick = () => showForm({ id: 'b' + Date.now().toString(36), status: 'unread', copies: 1 }, { heading: 'Add a book', isNew: true });
   $('#mAbout').onclick = () => openSheet(`<h2>About &amp; tips</h2><div class="desc" style="max-height:none">
     <p>Book details come from Open Library and Google Books. Your catalogue is stored only on this phone, in Chrome.</p>
@@ -680,7 +848,7 @@ $('#importInput').onchange = async e => {
 };
 
 /* ---------- Start ---------- */
-reload().catch(() => { $('#list').innerHTML = '<div class="empty"><b>Storage unavailable</b>This browser is blocking local storage (private/incognito mode?).</div>'; });
+reload().then(() => retryPending(false)).catch(() => { $('#list').innerHTML = '<div class="empty"><b>Storage unavailable</b>This browser is blocking local storage (private/incognito mode?).</div>'; });
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>
